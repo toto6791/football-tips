@@ -1,0 +1,53 @@
+# Сваля прогнозите от futbol24 и публикува приложението в GitHub Pages.
+# Пуска се автоматично на всеки 30 минути, при всяка промяна на файловете
+# и ръчно от раздела Actions → „Обновяване на прогнозите“ → Run workflow.
+
+name: Обновяване на прогнозите
+
+on:
+  schedule:
+    - cron: "11,41 * * * *" # на 11-ата и 41-вата минута всеки час (по UTC)
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# да не се пускат две обновявания едновременно
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Взимане на файловете
+        uses: actions/checkout@v7
+
+      - name: Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Сваляне на прогнозите
+        run: node scraper/scrape.mjs site/tips.json
+
+      - name: Подготовка на GitHub Pages
+        uses: actions/configure-pages@v6
+
+      - name: Качване на сайта
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+      - name: Публикуване
+        id: deployment
+        uses: actions/deploy-pages@v5
