@@ -125,7 +125,38 @@ function renderMatch(m) {
         ${pickText}
       </span>
       ${slip}
+      ${renderOverUnder(m.ou, tip)}
     </a>`;
+}
+
+// Таблица с вероятностите за над/под от 0.5 до 6.5 гола.
+// Колкото по-голям е процентът, толкова по-плътен е цветът на клетката.
+// Клетката от прогнозата („+2.5“ → над 2.5, „−3.5“ → под 3.5) е оградена.
+function renderOverUnder(ou, tip) {
+  if (!ou || !Array.isArray(ou.lines) || !ou.lines.length) return "";
+  var m = tip && /^([+−-])\s*(\d+(?:[.,]5))$/.exec(tip.code || "");
+  var tipLine = m ? m[2].replace(",", ".") : "";
+  var tipSide = m ? (m[1] === "+" ? "over" : "under") : "";
+  var few = ou.games < 4;
+
+  function cell(l, side) {
+    var pct = l[side];
+    var cls = side + (String(l.line) === tipLine && side === tipSide ? " mark" : "");
+    return `<td class="${cls}" style="--p:${Math.round(pct * 0.7)}%">${pct}%</td>`;
+  }
+
+  return `<div class="ou${few ? " few" : ""}">
+      <table title="Очаквани голове в мача: ${esc(ou.xg)}">
+        <thead><tr><th scope="col">Голове</th>${ou.lines
+          .map((l) => `<th scope="col"${String(l.line) === tipLine ? ' class="mark"' : ""}>${l.line}</th>`)
+          .join("")}</tr></thead>
+        <tbody>
+          <tr><th scope="row">Над</th>${ou.lines.map((l) => cell(l, "over")).join("")}</tr>
+          <tr><th scope="row">Под</th>${ou.lines.map((l) => cell(l, "under")).join("")}</tr>
+        </tbody>
+      </table>
+      ${few ? '<div class="ou-few">Малко изиграни мачове, по-неточно</div>' : ""}
+    </div>`;
 }
 
 function renderAll() {

@@ -4,6 +4,7 @@
  *   --ink   тъмносиньо за текста и горната лента
  *   --pitch зеленото на терена (бутони, избран ден)
  *   --slip  фонът на „фишчето“ с прогнозата и коефициента
+ *   --over / --under  двата цвята на таблицата „над/под“
  */
 
 @font-face {
@@ -44,6 +45,8 @@
   --bar: #13213a;
   --on-bar: #e9eef7;
   --bar-muted: #a9b5ca;
+  --over: #d9822b;
+  --under: #3c6fb4;
 
   --body: "Fira Sans", "Segoe UI", Roboto, system-ui, sans-serif;
   --cond: "Fira Sans Condensed", "Arial Narrow", "Roboto Condensed", system-ui, sans-serif;
@@ -64,6 +67,8 @@
     --slip: #3a3216;
     --slip-ink: #ffe89a;
     --bar: #0b1220;
+    --over: #f0a04b;
+    --under: #5f8fd6;
   }
 }
 :root[data-theme="dark"] {
@@ -77,6 +82,8 @@
   --slip: #3a3216;
   --slip-ink: #ffe89a;
   --bar: #0b1220;
+  --over: #f0a04b;
+  --under: #5f8fd6;
 }
 
 *,
@@ -311,6 +318,67 @@ button {
 .teams .pick-text b {
   color: var(--pitch);
   font-weight: 500;
+}
+
+/* вероятности за над/под 0.5 … 6.5 гола: на цял ред под мача */
+.ou {
+  grid-column: 1 / -1;
+  overflow-x: auto;
+  margin-top: -2px;
+}
+.ou table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 2px;
+  table-layout: fixed;
+  font-family: var(--cond);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  min-width: 300px;
+}
+.ou th {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 0 0 1px;
+}
+.ou th[scope="row"] {
+  text-align: left;
+  width: 3.4em;
+  font-family: var(--body);
+  font-weight: 500;
+}
+.ou thead th[scope="col"]:first-child {
+  text-align: left;
+  font-family: var(--body);
+  font-weight: 400;
+  font-size: 11px;
+}
+.ou td {
+  font-weight: 600;
+  font-size: 14px;
+  padding: 4px 0 5px;
+  border-radius: 5px;
+  color: var(--ink);
+}
+.ou td.over {
+  background: color-mix(in srgb, var(--over) var(--p), transparent);
+}
+.ou td.under {
+  background: color-mix(in srgb, var(--under) var(--p), transparent);
+}
+.ou td.mark {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+}
+.ou thead th.mark {
+  color: var(--ink);
+  font-weight: 700;
+}
+.ou-few {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
 }
 
 /* „фишчето“: кодът на прогнозата и коефициентът */

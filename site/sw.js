@@ -1,5 +1,5 @@
 // Пази файловете на приложението и последните прогнози, за да работи без интернет.
-const CACHE = "f24-tips-v1";
+const CACHE = "f24-tips-v3";
 const FILES = [
   "./", "./index.html", "./manifest.webmanifest", "./css/styles.css",
   "./js/config.js", "./js/utils.js", "./js/tip-text.js", "./js/data.js", "./js/render.js", "./js/app.js",

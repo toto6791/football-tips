@@ -5,6 +5,8 @@
  * Как работи:
  *   1. Отваря страниците с мачове за днес, утре, вдругиден и след 3 дни.
  *   2. За всеки мач отваря страницата с прогнозата и взима „Our tip“ и коефициента.
+ *      От таблицата с класирането на същата страница изчислява вероятността
+ *      за над/под 2.5 гола (виж „Вероятност за над/под“ по-долу).
  *   3. Записва всичко в tips.json, който приложението чете.
  *
  * За да не натоварва сайта, отваря страниците една по една с пауза между тях
@@ -50,11 +52,18 @@ async function fetchText(url) {
   return null;
 }
 
+const ACCENTS = { acute: "\u0301", grave: "\u0300", circ: "\u0302", uml: "\u0308", tilde: "\u0303", cedil: "\u0327", ring: "\u030A", caron: "\u030C" };
+
 // HTML символи → нормален текст: &amp; → &
 function decodeEntities(s) {
   return String(s || "")
     .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(+n))
     .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    // букви със знаци: &ccedil; → ç, &eacute; → é
+    .replace(/&([a-z])(acute|grave|circ|uml|tilde|cedil|ring|caron);/gi, (_, l, mark) =>
+      (l + ACCENTS[mark.toLowerCase()]).normalize("NFC"),
+    )
+    .replace(/&szlig;/g, "ß")
     .replace(/&nbsp;/g, " ")
     .replace(/&quot;/g, '"')
     .replace(/&#0?39;|&apos;/g, "'")
@@ -114,6 +123,113 @@ function cleanLeague(text) {
   return text.replace(/^(.+?)\s+\1(\s+-\s+)/, "$1$2").trim();
 }
 
+/* ---- Вероятност за над/под ---- */
+
+// Колко изиграни мача „на заем“ от средното за лигата получава всеки отбор.
+// Така отбор с малко мачове не получава крайни стойности.
+const PRIOR_GAMES = 6;
+const LEAGUE_PRIOR_GAMES = 20;
+const OU_LINES = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5]; // линиите за над/под
+
+// Име на отбор за сравнение: „Fenerbahçe“ → „fenerbahce“
+function teamKey(name) {
+  return String(name || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+// Таблиците с класиране от страницата: [{ name, mp, gf, ga }, …]
+function parseStandings(html) {
+  const tables = [];
+  for (const t of html.matchAll(/<table\b[\s\S]*?<\/table>/gi)) {
+    const rows = [...t[0].matchAll(/<tr\b[\s\S]*?<\/tr>/gi)].map((r) =>
+      [...r[0].matchAll(/<t[hd]\b[^>]*>([\s\S]*?)<\/t[hd]>/gi)].map((c) => textOf(c[1])),
+    );
+    const head = rows.find((r) => r.includes("GF") && r.includes("GA"));
+    if (!head) continue;
+    const col = (n) => head.indexOf(n);
+    const [iTeam, iMp, iGf, iGa] = [col("TEAM"), col("MP"), col("GF"), col("GA")];
+    if ([iTeam, iMp, iGf, iGa].includes(-1)) continue;
+
+    const teams = rows
+      .filter((r) => r !== head && r.length > iGa)
+      .map((r) => ({ name: r[iTeam], mp: +r[iMp], gf: +r[iGf], ga: +r[iGa] }))
+      .filter((r) => r.name && [r.mp, r.gf, r.ga].every(Number.isFinite));
+    if (teams.length) tables.push(teams);
+  }
+  return tables;
+}
+
+// Намира отбора в таблицата: първо точно име, после частично („Liverpool FC“ ↔ „Liverpool“)
+function findTeam(table, name) {
+  const k = teamKey(name);
+  if (!k) return null;
+  const exact = table.find((r) => teamKey(r.name) === k);
+  if (exact) return exact;
+  // в клетката понякога името стои два пъти: „Aston Villa Aston Villa U19“
+  const ends = table.filter((r) => teamKey(r.name).endsWith(" " + k));
+  if (ends.length === 1) return ends[0];
+  const part = table.filter((r) => teamKey(r.name).includes(k) || k.includes(teamKey(r.name)));
+  return part.length === 1 ? part[0] : null;
+}
+
+// Вероятност за най-много n гола при средно lambda гола (разпределение на Поасон)
+function poissonAtMost(n, lambda) {
+  let term = Math.exp(-lambda);
+  let sum = term;
+  for (let i = 1; i <= n; i++) {
+    term *= lambda / i;
+    sum += term;
+  }
+  return sum;
+}
+
+/*
+ * Изчислява вероятността за над/под 2.5 гола от класирането:
+ *   1. Средно голове на отбор в мач за лигата (от цялата таблица).
+ *   2. Атака и защита на двата отбора (вкарани и допуснати на мач),
+ *      смесени с PRIOR_GAMES мача на средното ниво за лигата.
+ *   3. Очаквани голове = атака на домакина × защита на госта ÷ средното
+ *      + атака на госта × защита на домакина ÷ средното.
+ *   4. Вероятност по Поасон за брой голове под линията → „под“, останалото → „над“
+ *      (за 2.5: 0, 1 или 2 гола → „под“). Смята се за всички линии от OU_LINES.
+ * Връща null, ако двата отбора не са в една таблица.
+ */
+function overUnderFromStandings(html, home, away) {
+  for (const table of parseStandings(html)) {
+    const h = findTeam(table, home);
+    const a = findTeam(table, away);
+    if (!h || !a || h === a || h.mp + a.mp === 0) continue;
+
+    // средно голове на отбор в мач за лигата; в началото на сезона се доближава
+    // до обичайните 1.35 (около 2.7 гола в мач), докато се натрупат мачове
+    const games = table.reduce((s, r) => s + r.mp, 0);
+    const goals = table.reduce((s, r) => s + r.gf + r.ga, 0) / 2;
+    const avg = (goals + LEAGUE_PRIOR_GAMES * 1.35) / (games + LEAGUE_PRIOR_GAMES);
+
+    const rate = (g, mp) => (g + PRIOR_GAMES * avg) / (mp + PRIOR_GAMES);
+    const xgHome = (rate(h.gf, h.mp) * rate(a.ga, a.mp)) / avg;
+    const xgAway = (rate(a.gf, a.mp) * rate(h.ga, h.mp)) / avg;
+    const xg = Math.min(6, Math.max(0.6, xgHome + xgAway));
+
+    // за всяка линия: процент „под“ и „над“ (сборът винаги е 100)
+    const lines = OU_LINES.map((line) => {
+      // между 1 и 99: изчислението никога не е сигурно на 100%
+      const under = Math.min(99, Math.max(1, Math.round(poissonAtMost(Math.floor(line), xg) * 100)));
+      return { line, over: 100 - under, under };
+    });
+    return {
+      lines,
+      xg: Math.round(xg * 100) / 100,
+      games: Math.min(h.mp, a.mp), // по-малкото изиграни мачове от двата отбора
+    };
+  }
+  return null;
+}
+
 /* ---- Страница с прогнозата за един мач ---- */
 
 function parseDetailPage(html) {
@@ -153,6 +269,9 @@ function parseDetailPage(html) {
   // Час, ако липсва в списъка: „Today 19:00“ или „14.10.2026 19:00“
   const when = textOf(html).match(/\b(?:Today|Tomorrow|\d{2}\.\d{2}\.\d{4})\s+(\d{1,2}:\d{2})\b/);
   if (when) out.time = when[1].padStart(5, "0");
+
+  // Вероятност за над/под 0.5 … 6.5 гола (null, ако няма класиране за двата отбора)
+  out.ou = out.home && out.away ? overUnderFromStandings(html, out.home, out.away) : null;
 
   return out;
 }
@@ -243,6 +362,8 @@ async function main() {
       const kickoff = Date.parse(kickoffIso(m.id, m.time));
       if (kickoff < now - 2 * 3600e3) return false; // мачът отдавна е започнал
       if (!m.tip) return true; // още нямаме прогноза
+      // още не е смятана вероятността за над/под или е от старата версия само с 2.5
+      if ((!("ou" in m) || (m.ou && !m.ou.lines)) && kickoff > now) return true;
       return now - (m.checkedAt || 0) > RECHECK_HOURS * 3600e3 && kickoff > now;
     })
     .sort((a, b) => kickoffIso(a.id, a.time).localeCompare(kickoffIso(b.id, b.time)))
@@ -254,6 +375,7 @@ async function main() {
     const html = await fetchText(m.url);
     if (html) {
       const d = parseDetailPage(html);
+      if (!d.ou && m.home && m.away) d.ou = overUnderFromStandings(html, m.home, m.away);
       Object.assign(m, {
         tip: d.tip || m.tip || "",
         odd: d.odd || m.odd || "",
@@ -261,6 +383,7 @@ async function main() {
         away: m.away || d.away || "",
         league: m.league || d.leagueName || "",
         time: m.time || d.time || "",
+        ou: d.ou || m.ou || null,
         checkedAt: now,
       });
       if (d.tip) withTip++;
@@ -268,6 +391,7 @@ async function main() {
     await sleep(PAUSE_MS);
   }
   console.log(`Прогнози намерени: ${withTip} от ${toCheck.length}`);
+  console.log(`Вероятност за над/под: ${toCheck.filter((m) => m.ou).length} от ${toCheck.length}`);
   if (toCheck.length >= 5 && withTip === 0) {
     console.warn("ВНИМАНИЕ: нито една прогноза не е намерена. Сайтът може да е сменил вида на страниците.");
   }
@@ -283,6 +407,7 @@ async function main() {
     generatedAt: new Date(now).toISOString(),
     count: list.length,
     withTip: list.filter((m) => m.tip).length,
+    withOu: list.filter((m) => m.ou).length,
     matches: list,
   };
   await fs.mkdir(OUT_FILE.split("/").slice(0, -1).join("/") || ".", { recursive: true });
@@ -291,7 +416,7 @@ async function main() {
 }
 
 // Позволява тестване на отделните функции без да се пуска цялата програма
-export { parseListPage, parseDetailPage, kickoffIso, cleanLeague };
+export { parseListPage, parseDetailPage, kickoffIso, cleanLeague, parseStandings, overUnderFromStandings };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((e) => {
